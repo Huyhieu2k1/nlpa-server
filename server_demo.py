@@ -126,13 +126,10 @@ def redeem_key():
         USERS[u]["paid_until"] = now + timedelta(days=add_days)
     return jsonify({"ok": True, "message": f"Gia hạn thành công thêm {add_days} ngày"})
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
 # ===== ADMIN API =====
 import os
 from functools import wraps
 
-# lấy thông tin admin từ biến môi trường trên Render
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "123456")
 ADMIN_TOKEN = None  # tạm lưu token admin
@@ -164,7 +161,6 @@ def admin_login():
 @app.get("/admin/users")
 @require_admin
 def admin_list_users():
-    # trả về danh sách người dùng, ẩn bớt mật khẩu hash
     data = {
         u: {
             "paid_until": str(info["paid_until"]) if info["paid_until"] else None,
@@ -198,4 +194,11 @@ def admin_delete_user(username):
         return jsonify({"ok": False, "message": "Không tìm thấy user"}), 404
     USERS.pop(username)
     return jsonify({"ok": True, "message": f"Đã xóa user {username}"})
+
+# ===== CHẠY SERVER =====
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
 
