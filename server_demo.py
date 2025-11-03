@@ -12,8 +12,14 @@ app = Flask(__name__)
 CORS(app)
 
 # ===== DỮ LIỆU NGƯỜI DÙNG =====
-USERS = {}   # username -> {pw_hash, paid_until: datetime|None, machines: {fingerprint: start_trial_datetime}}
-TOKENS = {}  # token -> username
+# USERS[u] = {
+#   "pw_hash": str,
+#   "paid_until": datetime | None,
+#   "machines": { fingerprint: first_seen_datetime },
+#   "pending_machine": str | None    # gắn máy ngay khi register
+# }
+USERS = {}
+TOKENS = {}
 DATA_FILE = "users.json"
 
 # ===== HÀM LƯU & TẢI DỮ LIỆU =====
@@ -27,14 +33,14 @@ def load_users():
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             for u, info in data.items():
-                # convert paid_until string -> datetime
+                # paid_until
                 if info.get("paid_until"):
                     try:
                         info["paid_until"] = datetime.fromisoformat(info["paid_until"])
                     except Exception:
                         info["paid_until"] = None
-                # convert machines values -> datetime
-                machines = info.get("machines", {})
+                # machines values -> datetime
+                machines = info.get("machines", {}) or {}
                 for k, v in list(machines.items()):
                     if isinstance(v, str):
                         try:
@@ -42,9 +48,9 @@ def load_users():
                         except Exception:
                             machines[k] = None
                 info["machines"] = machines
+                # pending_machine giữ nguyên str hoặc None
             USERS = data
 
-# Tải dữ liệu khi khởi động
 load_users()
 print(f"✅ Loaded {len(USERS)} user(s) from file.")
 
@@ -59,15 +65,29 @@ def _auth():
     tok = h.split(" ", 1)[1].strip()
     return TOKENS.get(tok)
 
-# ===== HỖ TRỢ GIỚI HẠN TRIAL =====
-def _count_trials_for_machine(mc: str) -> int:
-    """Đếm số tài khoản đã từng được cấp trial (machines) cho fingerprint mc"""
+# ===== GIỚI HẠN TRIAL =====
+MAX_TRIALS_PER_MACHINE = 2
+
+def _is_trial_account(info: dict) -> bool:
+    """Trial khi chưa có paid_until."""
+    return not info.get("paid_until")
+
+def _count_trials_for_machine_including_pending(mc: str) -> int:
+    """
+    Đếm số tài khoản TRIAL gắn với máy mc, tính cả:
+      1) machines có mc
+      2) pending_machine == mc
+    Các tài khoản đã gia hạn (paid_until != None) KHÔNG tính.
+    """
     if not mc:
         return 0
     cnt = 0
     for info in USERS.values():
+        if not _is_trial_account(info):
+            continue
         machines = info.get("machines") or {}
-        if mc in machines:
+        pending = (info.get("pending_machine") or "").upper()
+        if mc in machines or pending == mc:
             cnt += 1
     return cnt
 
@@ -81,23 +101,26 @@ def register():
 
     if not u or not p:
         return jsonify({"ok": False, "message": "Thiếu thông tin"}), 400
-
-    # ✅ bắt buộc có fingerprint
     if not mc:
         return jsonify({"ok": False, "message": "Thiếu mã máy (fingerprint)."}), 400
-
     if u in USERS:
         return jsonify({"ok": False, "message": "Tài khoản đã tồn tại"})
 
-    # Giới hạn 2 tài khoản trial tối đa cho mỗi máy
-    used = _count_trials_for_machine(mc)
-    if used >= 2:
+    # Kiểm tra quota trial theo máy (tính cả pending)
+    used = _count_trials_for_machine_including_pending(mc)
+    if used >= MAX_TRIALS_PER_MACHINE:
         return jsonify({
             "ok": False,
             "message": "Máy này đã đạt số lần dùng thử tối đa. Vui lòng liên hệ admin."
         }), 403
 
-    USERS[u] = {"pw_hash": _hash(p), "paid_until": None, "machines": {}}
+    # Tạo user ở trạng thái trial, gắn pending_machine = mc
+    USERS[u] = {
+        "pw_hash": _hash(p),
+        "paid_until": None,
+        "machines": {},
+        "pending_machine": mc,
+    }
     save_users()
     return jsonify({"ok": True, "message": "Đăng ký thành công"})
 
@@ -108,7 +131,6 @@ def login():
     p = data.get("password") or ""
     mc = (data.get("fingerprint") or "").strip().upper()
 
-    # ✅ bắt buộc có fingerprint
     if not mc:
         return jsonify({"ok": False, "message": "Thiếu mã máy (fingerprint)."}), 400
 
@@ -118,36 +140,57 @@ def login():
 
     now = datetime.now(timezone.utc)
     paid_until = user.get("paid_until")
-    machines = user.get("machines", {})
+    machines = user.get("machines") or {}
+    pending = (user.get("pending_machine") or "").upper()
 
-    # 1) Nếu đã có paid nhưng HẾT HẠN => chặn đăng nhập
+    # Nếu đã có paid nhưng HẾT HẠN => chặn đăng nhập
     if paid_until and paid_until <= now:
         return jsonify({"ok": False, "message": "Tài khoản đã hết hạn, vui lòng gia hạn"}), 403
 
-    # 2) Khóa theo máy + giới hạn trial
+    # Trường hợp user chưa từng gắn máy (machines rỗng):
     if len(machines) == 0:
-        used = _count_trials_for_machine(mc)
-        if used >= 2:
-            return jsonify({
-                "ok": False,
-                "message": "Máy này đã đạt số lần dùng thử tối đa. Vui lòng liên hệ admin."
-            }), 403
-        machines[mc] = now
-        user["machines"] = machines
-        save_users()
+        if _is_trial_account(user):
+            # Bắt buộc login từ đúng máy đã đăng ký
+            if pending and pending != mc:
+                return jsonify({
+                    "ok": False,
+                    "message": "Tài khoản này được đăng ký trên máy khác."
+                }), 403
+
+            # Kiểm tra quota trial trước khi hợp thức hóa
+            used = _count_trials_for_machine_including_pending(mc)
+            # Nếu pending == mc thì used đã tính mình trong pending rồi; vẫn phải đảm bảo không vượt
+            if used > MAX_TRIALS_PER_MACHINE:
+                return jsonify({
+                    "ok": False,
+                    "message": "Máy này đã đạt số lần dùng thử tối đa. Vui lòng liên hệ admin."
+                }), 403
+
+            # Hợp thức hóa: chuyển pending -> machines[mc] = now
+            user["machines"] = {mc: now}
+            user["pending_machine"] = None
+            save_users()
+        else:
+            # Tài khoản đã trả phí nhưng chưa gắn máy: cho gắn vào máy hiện tại
+            user["machines"] = {mc: now}
+            user["pending_machine"] = None
+            save_users()
     else:
+        # Đã gắn máy trước đó
         if mc not in machines:
             return jsonify({"ok": False, "message": "Tài khoản này đã được sử dụng trên một máy khác"}), 403
 
-        if not paid_until:
+        # Nếu còn trial: check hết hạn trial 1 ngày
+        if _is_trial_account(user):
             start = machines.get(mc)
             if start is None:
-                machines[mc] = now
+                user["machines"][mc] = now
                 save_users()
             else:
                 if now > start + timedelta(days=1):
                     return jsonify({"ok": False, "message": "Tài khoản đã hết hạn dùng thử"}), 403
 
+    # Tạo token
     tok = secrets.token_urlsafe(24)
     TOKENS[tok] = u
     return jsonify({"ok": True, "token": tok})
@@ -172,6 +215,7 @@ def profile():
 
     start = user["machines"].get(mc)
     if not start:
+        # chưa từng gắn: coi như còn 1 ngày để hiển thị đẹp
         return jsonify({"username": u, "plan": "trial", "days_left": 1})
     remaining = (start + timedelta(days=1) - now).total_seconds() / 86400
     days = int(remaining)
@@ -211,6 +255,9 @@ def redeem_key():
         USERS[u]["paid_until"] = current + timedelta(days=add_days)
     else:
         USERS[u]["paid_until"] = now + timedelta(days=add_days)
+
+    # Khi đã gia hạn: bỏ pending_machine nếu còn
+    USERS[u]["pending_machine"] = None
     save_users()
     return jsonify({"ok": True, "message": f"Gia hạn thành công thêm {add_days} ngày"})
 
@@ -250,6 +297,7 @@ def admin_list_users():
         u: {
             "paid_until": str(info["paid_until"]) if info["paid_until"] else None,
             "machines": list((info.get("machines") or {}).keys()),
+            "pending_machine": info.get("pending_machine"),
         }
         for u, info in USERS.items()
     }
@@ -269,6 +317,8 @@ def admin_set_paid(username):
         USERS[username]["paid_until"] = current + timedelta(days=days)
     else:
         USERS[username]["paid_until"] = now + timedelta(days=days)
+    # xóa pending khi đã trả phí
+    USERS[username]["pending_machine"] = None
     save_users()
     return jsonify({"ok": True, "message": f"Gia hạn {username} thêm {days} ngày"})
 
