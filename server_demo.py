@@ -1,24 +1,22 @@
-# server_demo.py
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify
-from flask_cors import CORS  # thêm dòng này
+from flask_cors import CORS
 import secrets
 import hashlib
 import json
 import os
+from functools import wraps
 
+# ===== KHỞI TẠO APP =====
 app = Flask(__name__)
-load_users()
-print(f"✅ Loaded {len(USERS)} user(s) from file.")
+CORS(app)
 
-CORS(app)  # thêm dòng này
-
-# bộ nhớ tạm
-USERS = {}           # username -> {"pw_hash": "...", "paid_until": datetime | None, "machines": {fingerprint: first_seen_datetime}}
-TOKENS = {}          # token -> username
-
+# ===== DỮ LIỆU NGƯỜI DÙNG =====
+USERS = {}  # username -> {pw_hash, paid_until, machines}
+TOKENS = {}  # token -> username
 DATA_FILE = "users.json"
 
+# ===== HÀM LƯU & TẢI DỮ LIỆU =====
 def save_users():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(USERS, f, default=str, ensure_ascii=False, indent=2)
@@ -28,7 +26,6 @@ def load_users():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Chuyển chuỗi ngày về datetime nếu có
             for u, info in data.items():
                 if info.get("paid_until"):
                     try:
@@ -37,6 +34,11 @@ def load_users():
                         info["paid_until"] = None
             USERS = data
 
+# Tải dữ liệu khi khởi động
+load_users()
+print(f"✅ Loaded {len(USERS)} user(s) from file.")
+
+# ===== TIỆN ÍCH CHUNG =====
 def _hash(pw: str) -> str:
     return hashlib.sha256(pw.encode()).hexdigest()
 
@@ -45,9 +47,9 @@ def _auth():
     if not h.startswith("Bearer "):
         return None
     tok = h.split(" ", 1)[1].strip()
-    u = TOKENS.get(tok)
-    return u
+    return TOKENS.get(tok)
 
+# ===== API NGƯỜI DÙNG =====
 @app.post("/api/register")
 def register():
     data = request.get_json(force=True)
@@ -58,6 +60,7 @@ def register():
     if u in USERS:
         return jsonify({"ok": False, "message": "Tài khoản đã tồn tại"})
     USERS[u] = {"pw_hash": _hash(p), "paid_until": None, "machines": {}}
+    save_users()
     return jsonify({"ok": True, "message": "Đăng ký thành công"})
 
 @app.post("/api/login")
@@ -70,11 +73,11 @@ def login():
     if not user or user["pw_hash"] != _hash(p):
         return jsonify({"ok": False, "message": "Sai tài khoản hoặc mật khẩu"}), 401
 
-    # nếu chưa có paid và máy chưa có dấu dùng thử thì cấp dùng thử 1 ngày từ thời điểm này
     now = datetime.now(timezone.utc)
     if not user["paid_until"]:
         if mc not in user["machines"]:
             user["machines"][mc] = now
+            save_users()
 
     tok = secrets.token_urlsafe(24)
     TOKENS[tok] = u
@@ -88,9 +91,7 @@ def profile():
     user = USERS[u]
     now = datetime.now(timezone.utc)
     paid_until = user["paid_until"]
-    # xác định dùng thử theo fingerprint gửi kèm ở param cho tiện
     mc = request.headers.get("X-Machine", "")
-    # nếu client không gửi thì vẫn thử lấy từ danh sách đầu tiên
     if not mc and user["machines"]:
         mc = list(user["machines"].keys())[0]
 
@@ -98,19 +99,15 @@ def profile():
         days = int((paid_until - now).total_seconds() // 86400)
         return jsonify({"username": u, "plan": "paid", "days_left": days})
 
-    # trial theo máy
     start = user["machines"].get(mc)
     if not start:
-        # chưa từng cấp dùng thử cho máy này, coi như chưa có ngày
         return jsonify({"username": u, "plan": "trial", "days_left": 1})
     end = start + timedelta(days=1)
     remaining = (end - now).total_seconds() / 86400
     days = int(remaining)
-    # Nếu còn trong thời gian 1 ngày, nhưng chưa hết hạn thì ít nhất trả về 1
     if remaining > 0 and days < 1:
         days = 1
     return jsonify({"username": u, "plan": "trial", "days_left": days})
-
 
 @app.post("/api/change_password")
 def change_password():
@@ -123,6 +120,7 @@ def change_password():
     if USERS[u]["pw_hash"] != _hash(old):
         return jsonify({"ok": False, "message": "Mật khẩu hiện tại không đúng"})
     USERS[u]["pw_hash"] = _hash(new)
+    save_users()
     return jsonify({"ok": True, "message": "Đã đổi mật khẩu"})
 
 @app.post("/api/redeem_key")
@@ -133,14 +131,8 @@ def redeem_key():
     data = request.get_json(force=True)
     code = (data.get("code") or "").strip().upper()
 
-    add_days = 0
-    if code == "D7":
-        add_days = 7
-    elif code == "D30":
-        add_days = 30
-    elif code == "D365":
-        add_days = 365
-    else:
+    add_days = {"D7": 7, "D30": 30, "D365": 365}.get(code, 0)
+    if not add_days:
         return jsonify({"ok": False, "message": "Mã không hợp lệ"})
 
     now = datetime.now(timezone.utc)
@@ -149,15 +141,13 @@ def redeem_key():
         USERS[u]["paid_until"] = current + timedelta(days=add_days)
     else:
         USERS[u]["paid_until"] = now + timedelta(days=add_days)
+    save_users()
     return jsonify({"ok": True, "message": f"Gia hạn thành công thêm {add_days} ngày"})
 
 # ===== ADMIN API =====
-import os
-from functools import wraps
-
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "123456")
-ADMIN_TOKEN = None  # tạm lưu token admin
+ADMIN_TOKEN = None
 
 def require_admin(f):
     @wraps(f)
@@ -209,6 +199,7 @@ def admin_set_paid(username):
         USERS[username]["paid_until"] = current + timedelta(days=days)
     else:
         USERS[username]["paid_until"] = now + timedelta(days=days)
+    save_users()
     return jsonify({"ok": True, "message": f"Gia hạn {username} thêm {days} ngày"})
 
 @app.delete("/admin/users/<username>")
@@ -218,10 +209,9 @@ def admin_delete_user(username):
     if username not in USERS:
         return jsonify({"ok": False, "message": "Không tìm thấy user"}), 404
     USERS.pop(username)
+    save_users()
     return jsonify({"ok": True, "message": f"Đã xóa user {username}"})
 
 # ===== CHẠY SERVER =====
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
