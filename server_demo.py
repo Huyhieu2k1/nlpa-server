@@ -283,6 +283,27 @@ def admin_set_paid(username):
     })
     return jsonify({"ok": True, "message": f"Gia hạn {username} thêm {days} ngày"})
 
+@app.post("/admin/users/<username>/reset_password")
+@require_admin
+def admin_reset_password(username):
+    username = username.lower()
+    data = request.get_json(force=True)
+    new_pw = data.get("new_password", "123456")  # mặc định nếu không gửi thì là 123456
+
+    user = users_col.find_one({"username": username})
+    if not user:
+        return jsonify({"ok": False, "message": "Không tìm thấy user"}), 404
+
+    users_col.update_one(
+        {"username": username},
+        {"$set": {"pw_hash": _hash(new_pw)}}
+    )
+
+    return jsonify({
+        "ok": True,
+        "message": f"✅ Đã đặt lại mật khẩu cho '{username}' thành '{new_pw}'"
+    })
+
 @app.delete("/admin/users/<username>")
 @require_admin
 def admin_delete_user(username):
