@@ -59,16 +59,41 @@ def _auth():
     tok = h.split(" ", 1)[1].strip()
     return TOKENS.get(tok)
 
+# ===== HỖ TRỢ GIỚI HẠN TRIAL =====
+def _count_trials_for_machine(mc: str) -> int:
+    """Đếm số tài khoản đã từng được cấp trial (machines) cho fingerprint mc"""
+    if not mc:
+        return 0
+    cnt = 0
+    for info in USERS.values():
+        machines = info.get("machines") or {}
+        if mc in machines:
+            cnt += 1
+    return cnt
+
 # ===== API NGƯỜI DÙNG =====
 @app.post("/api/register")
 def register():
     data = request.get_json(force=True)
     u = (data.get("username") or "").strip().lower()
     p = data.get("password") or ""
+    mc = (data.get("fingerprint") or "").strip().upper()
+
     if not u or not p:
         return jsonify({"ok": False, "message": "Thiếu thông tin"}), 400
+
     if u in USERS:
         return jsonify({"ok": False, "message": "Tài khoản đã tồn tại"})
+
+    # Giới hạn 2 tài khoản trial tối đa cho mỗi máy
+    if mc:
+        used = _count_trials_for_machine(mc)
+        if used >= 2:
+            return jsonify({
+                "ok": False,
+                "message": "Máy này đã đạt số lần dùng thử tối đa. Vui lòng liên hệ admin."
+            }), 403
+
     USERS[u] = {"pw_hash": _hash(p), "paid_until": None, "machines": {}}
     save_users()
     return jsonify({"ok": True, "message": "Đăng ký thành công"})
@@ -92,9 +117,15 @@ def login():
     if paid_until and paid_until <= now:
         return jsonify({"ok": False, "message": "Tài khoản đã hết hạn, vui lòng gia hạn"}), 403
 
-    # 2) Khóa theo máy: chỉ cho phép 1 fingerprint duy nhất
+    # 2) Khóa theo máy + giới hạn trial
     if len(machines) == 0:
-        # lần đầu chưa gắn máy: gắn fingerprint hiện tại và cấp trial 1 ngày kể từ bây giờ
+        # lần đầu chưa gắn máy: kiểm tra xem máy này đã dùng trial bao nhiêu lần
+        used = _count_trials_for_machine(mc)
+        if used >= 2:
+            return jsonify({
+                "ok": False,
+                "message": "Máy này đã đạt số lần dùng thử tối đa. Vui lòng liên hệ admin."
+            }), 403
         machines[mc] = now
         user["machines"] = machines
         save_users()
@@ -107,7 +138,6 @@ def login():
         if not paid_until:
             start = machines.get(mc)
             if start is None:
-                # dữ liệu lỗi, coi như cấp lại từ bây giờ
                 machines[mc] = now
                 save_users()
             else:
@@ -130,7 +160,6 @@ def profile():
     now = datetime.now(timezone.utc)
     paid_until = user.get("paid_until")
 
-    # lấy máy từ header cho minh bạch nếu cần
     mc = request.headers.get("X-Machine", "")
     if not mc and user["machines"]:
         mc = list(user["machines"].keys())[0]
@@ -139,10 +168,8 @@ def profile():
         days = int((paid_until - now).total_seconds() // 86400)
         return jsonify({"username": u, "plan": "paid", "days_left": days})
 
-    # trial theo máy
     start = user["machines"].get(mc)
     if not start:
-        # chưa từng cấp trial cho máy này, để app hiện là còn 1 ngày để hiển thị đẹp
         return jsonify({"username": u, "plan": "trial", "days_left": 1})
     remaining = (start + timedelta(days=1) - now).total_seconds() / 86400
     days = int(remaining)
