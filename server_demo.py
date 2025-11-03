@@ -82,17 +82,20 @@ def register():
     if not u or not p:
         return jsonify({"ok": False, "message": "Thiếu thông tin"}), 400
 
+    # ✅ bắt buộc có fingerprint
+    if not mc:
+        return jsonify({"ok": False, "message": "Thiếu mã máy (fingerprint)."}), 400
+
     if u in USERS:
         return jsonify({"ok": False, "message": "Tài khoản đã tồn tại"})
 
     # Giới hạn 2 tài khoản trial tối đa cho mỗi máy
-    if mc:
-        used = _count_trials_for_machine(mc)
-        if used >= 2:
-            return jsonify({
-                "ok": False,
-                "message": "Máy này đã đạt số lần dùng thử tối đa. Vui lòng liên hệ admin."
-            }), 403
+    used = _count_trials_for_machine(mc)
+    if used >= 2:
+        return jsonify({
+            "ok": False,
+            "message": "Máy này đã đạt số lần dùng thử tối đa. Vui lòng liên hệ admin."
+        }), 403
 
     USERS[u] = {"pw_hash": _hash(p), "paid_until": None, "machines": {}}
     save_users()
@@ -104,6 +107,10 @@ def login():
     u = (data.get("username") or "").strip().lower()
     p = data.get("password") or ""
     mc = (data.get("fingerprint") or "").strip().upper()
+
+    # ✅ bắt buộc có fingerprint
+    if not mc:
+        return jsonify({"ok": False, "message": "Thiếu mã máy (fingerprint)."}), 400
 
     user = USERS.get(u)
     if not user or user["pw_hash"] != _hash(p):
@@ -119,7 +126,6 @@ def login():
 
     # 2) Khóa theo máy + giới hạn trial
     if len(machines) == 0:
-        # lần đầu chưa gắn máy: kiểm tra xem máy này đã dùng trial bao nhiêu lần
         used = _count_trials_for_machine(mc)
         if used >= 2:
             return jsonify({
@@ -131,21 +137,17 @@ def login():
         save_users()
     else:
         if mc not in machines:
-            # đã gắn máy khác trước đó
             return jsonify({"ok": False, "message": "Tài khoản này đã được sử dụng trên một máy khác"}), 403
 
-        # cùng máy: kiểm tra trial nếu chưa có paid
         if not paid_until:
             start = machines.get(mc)
             if start is None:
                 machines[mc] = now
                 save_users()
             else:
-                # trial 1 ngày
                 if now > start + timedelta(days=1):
                     return jsonify({"ok": False, "message": "Tài khoản đã hết hạn dùng thử"}), 403
 
-    # 3) Tạo token sau khi pass các điều kiện
     tok = secrets.token_urlsafe(24)
     TOKENS[tok] = u
     return jsonify({"ok": True, "token": tok})
