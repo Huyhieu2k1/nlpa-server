@@ -172,7 +172,7 @@ def redeem_key():
     data = request.get_json(force=True)
     code = (data.get("code") or "").strip().upper()
 
-    add_days = {"D7": 7, "D30": 30, "D365": 365}.get(code, 0)
+    add_days = {"DX7": 7, "DX30": 30, "DX365": 365}.get(code, 0)
     if not add_days:
         return jsonify({"ok": False, "message": "Mã không hợp lệ"})
 
@@ -186,8 +186,8 @@ def redeem_key():
     return jsonify({"ok": True, "message": f"Gia hạn thành công thêm {add_days} ngày"})
 
 # ===== ADMIN API =====
-ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "123456")
+ADMIN_USER = os.getenv("ADMIN_USER")
+ADMIN_PASS = os.getenv("ADMIN_PASS")
 ADMIN_TOKEN = None
 
 def require_admin(f):
