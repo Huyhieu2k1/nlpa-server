@@ -4,13 +4,38 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS  # thêm dòng này
 import secrets
 import hashlib
+import json
+import os
 
 app = Flask(__name__)
+load_users()
+print(f"✅ Loaded {len(USERS)} user(s) from file.")
+
 CORS(app)  # thêm dòng này
 
 # bộ nhớ tạm
 USERS = {}           # username -> {"pw_hash": "...", "paid_until": datetime | None, "machines": {fingerprint: first_seen_datetime}}
 TOKENS = {}          # token -> username
+
+DATA_FILE = "users.json"
+
+def save_users():
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(USERS, f, default=str, ensure_ascii=False, indent=2)
+
+def load_users():
+    global USERS
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # Chuyển chuỗi ngày về datetime nếu có
+            for u, info in data.items():
+                if info.get("paid_until"):
+                    try:
+                        info["paid_until"] = datetime.fromisoformat(info["paid_until"])
+                    except Exception:
+                        info["paid_until"] = None
+            USERS = data
 
 def _hash(pw: str) -> str:
     return hashlib.sha256(pw.encode()).hexdigest()
