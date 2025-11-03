@@ -98,7 +98,12 @@ def login():
         return jsonify({"ok": False, "message": "Sai tài khoản hoặc mật khẩu"}), 401
 
     now = datetime.now(timezone.utc)
-    paid_until = user.get("paid_until")
+
+    # --- FIX: đảm bảo paid_until là datetime trước khi so sánh ---
+    paid_until_raw = user.get("paid_until")
+    paid_until = datetime.fromisoformat(paid_until_raw) if isinstance(paid_until_raw, str) else paid_until_raw
+    # -------------------------------------------------------------
+
     machines = user.get("machines") or {}
     pending = (user.get("pending_machine") or "").upper()
 
