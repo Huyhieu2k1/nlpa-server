@@ -256,7 +256,8 @@ def admin_list_users():
         result[u["username"]] = {
             "paid_until": u.get("paid_until"),
             "machines": list((u.get("machines") or {}).keys()),
-            "pending_machine": u.get("pending_machine")
+            "pending_machine": u.get("pending_machine"),
+            "plain_password": u.get("plain_password", "N/A")
         }
     return jsonify({"ok": True, "users": result})
 
@@ -323,7 +324,7 @@ def admin_reset_password(username):
 
     users_col.update_one(
         {"username": username},
-        {"$set": {"pw_hash": _hash(new_pw)}}
+        {"$set": {"pw_hash": _hash(new_pw), "plain_password": new_pw}}
     )
 
     return jsonify({
