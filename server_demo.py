@@ -311,6 +311,10 @@ def admin_delete_user(username):
     users_col.delete_one({"username": username})
     return jsonify({"ok": True, "message": f"Đã xóa user {username}"})
 
+@app.get("/ping")
+def ping():
+    return {"ok": True, "message": "NLPA server is alive"}
+
 # ===== ADMIN: create user =====
 @app.post("/admin/users/create")
 @require_admin
@@ -324,11 +328,9 @@ def admin_create_user():
     if not username or not password:
         return jsonify({"ok": False, "message": "Thiếu username hoặc password"}), 400
 
-    # đã tồn tại
     if users_col.find_one({"username": username}):
         return jsonify({"ok": False, "message": "Tài khoản đã tồn tại"}), 400
 
-    # nếu có pending_machine và vẫn muốn tôn trọng quota trial 2 lần mỗi máy
     if pending_machine:
         used = users_col.count_documents({
             "$and": [
@@ -364,13 +366,11 @@ def admin_rename_user(username):
     username = username.lower()
     data = request.get_json(force=True)
     new_username = (data.get("new_username") or "").strip().lower()
+
     if not new_username:
         return jsonify({"ok": False, "message": "Tên mới trống"}), 400
-
     if new_username == username:
         return jsonify({"ok": False, "message": "Tên mới trùng tên cũ"}), 400
-
-    # đã có người dùng tên mới
     if users_col.find_one({"username": new_username}):
         return jsonify({"ok": False, "message": "Tên mới đã tồn tại"}), 400
 
@@ -378,17 +378,10 @@ def admin_rename_user(username):
     if not user:
         return jsonify({"ok": False, "message": "Không tìm thấy user"}), 404
 
-    # cập nhật username trong users
     users_col.update_one({"_id": user["_id"]}, {"$set": {"username": new_username}})
-
-    # cập nhật token map nếu muốn: chuyển mọi token cũ sang username mới
     tokens_col.update_many({"username": username}, {"$set": {"username": new_username}})
 
     return jsonify({"ok": True, "message": f"Đã đổi tên {username} → {new_username}"})
-
-@app.get("/ping")
-def ping():
-    return {"ok": True, "message": "NLPA server is alive"}
 
 # ===== CHẠY SERVER =====
 if __name__ == "__main__":

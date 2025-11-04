@@ -5,15 +5,14 @@ import customtkinter as ctk
 import requests
 from datetime import datetime, timezone
 
-# =============== helpers ===============
+# ---------- helpers ----------
 def iso_to_dt(value):
     if not value:
         return None
     if isinstance(value, datetime):
         return value
     try:
-        # cho cả dạng "...Z" hoặc có offset
-        if value.endswith("Z"):
+        if isinstance(value, str) and value.endswith("Z"):
             value = value.replace("Z", "+00:00")
         return datetime.fromisoformat(value)
     except Exception:
@@ -29,7 +28,7 @@ def days_left_from_iso(value):
     except Exception:
         return None
 
-# =============== app ===============
+# ---------- app ----------
 class AdminApp:
     def __init__(self):
         ctk.set_appearance_mode("light")
@@ -37,28 +36,32 @@ class AdminApp:
 
         self.root = ctk.CTk()
         self.root.title("NLPA Admin")
-        self.root.geometry("900x560")
-        self.root.minsize(900, 560)
+        self.root.geometry("980x620")
+        self.root.minsize(980, 620)
 
-        # state
+        # auth state
         self.api_url = tk.StringVar(value="https://nlpa-server-2.onrender.com")
         self.admin_user = tk.StringVar(value="")
         self.admin_pass = tk.StringVar(value="")
         self.admin_token = None
 
-        # selected user
+        # user state
+        self.users_cache = {}     # username -> info
+        self.filtered_users = []  # list of names after search filter
         self.selected_user = tk.StringVar(value="")
-        self.users_cache = {}  # username -> details
+        self.search_var = tk.StringVar(value="")
+        self.search_var.trace_add("write", self._apply_filter)
 
         self._build_ui()
 
+    # ---------- ui ----------
     def _build_ui(self):
         # top bar
         top = ctk.CTkFrame(self.root, corner_radius=10)
         top.pack(fill="x", padx=12, pady=(12, 8))
 
         ctk.CTkLabel(top, text="API URL").grid(row=0, column=0, padx=(12, 6), pady=10, sticky="w")
-        self.ent_api = ctk.CTkEntry(top, width=360, textvariable=self.api_url)
+        self.ent_api = ctk.CTkEntry(top, width=380, textvariable=self.api_url)
         self.ent_api.grid(row=0, column=1, padx=(0, 16), pady=10, sticky="w")
 
         ctk.CTkLabel(top, text="Admin").grid(row=0, column=2, padx=(0, 6), pady=10, sticky="e")
@@ -74,30 +77,48 @@ class AdminApp:
         self.btn_refresh = ctk.CTkButton(top, text="Tải users", width=120, command=self.refresh_users, state="disabled")
         self.btn_refresh.grid(row=0, column=6, padx=(0, 12), pady=10)
 
-        # main content split
-        body = ctk.CTkFrame(self.root, corner_radius=10)
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        # tabs
+        tabs = ctk.CTkTabview(self.root, width=940, height=520, corner_radius=10)
+        tabs.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.tab_users = tabs.add("Users")
+        self.tab_create = tabs.add("Create")
 
+        self._build_tab_users()
+        self._build_tab_create()
+
+    def _build_tab_users(self):
+        body = self.tab_users
         body.grid_columnconfigure(0, weight=1, uniform="cols")
         body.grid_columnconfigure(1, weight=2, uniform="cols")
-        body.grid_rowconfigure(0, weight=1)
+        body.grid_rowconfigure(1, weight=1)
+
+        # Search row
+        search_row = ctk.CTkFrame(body, corner_radius=8)
+        search_row.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 8))
+        ctk.CTkLabel(search_row, text="Tìm người dùng").pack(side="left", padx=(12, 6), pady=8)
+        self.ent_search = ctk.CTkEntry(search_row, width=280, textvariable=self.search_var, placeholder_text="gõ để lọc...")
+        self.ent_search.pack(side="left", padx=(0, 12), pady=8)
 
         # left: user list
         left = ctk.CTkFrame(body, corner_radius=10)
-        left.grid(row=0, column=0, sticky="nsew", padx=(12, 8), pady=12)
+        left.grid(row=1, column=0, sticky="nsew", padx=(12, 8), pady=(0, 12))
 
         ctk.CTkLabel(left, text="Danh sách người dùng", font=("Arial", 14, "bold")).pack(padx=12, pady=(12, 6), anchor="w")
-        self.listbox = tk.Listbox(left, height=20)
+        self.listbox = tk.Listbox(left)
         self.listbox.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.listbox.bind("<<ListboxSelect>>", self.on_select_user)
 
-        # right: user details + actions
+        # right: detail + actions
         right = ctk.CTkFrame(body, corner_radius=10)
-        right.grid(row=0, column=1, sticky="nsew", padx=(8, 12), pady=12)
+        right.grid(row=1, column=1, sticky="nsew", padx=(8, 12), pady=(0, 12))
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_columnconfigure(1, weight=1)
+        right.grid_columnconfigure(2, weight=1)
+        right.grid_columnconfigure(3, weight=1)
+        right.grid_rowconfigure(4, weight=1)
 
         ctk.CTkLabel(right, text="Chi tiết tài khoản", font=("Arial", 14, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=(12, 8))
 
-        # info labels
         self.lbl_user = ctk.CTkLabel(right, text="User: -", font=("Arial", 12))
         self.lbl_user.grid(row=1, column=0, columnspan=4, sticky="w", padx=12, pady=4)
 
@@ -107,11 +128,10 @@ class AdminApp:
         self.lbl_pending = ctk.CTkLabel(right, text="Pending machine: -", font=("Arial", 12))
         self.lbl_pending.grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=4)
 
-        self.txt_machines = ctk.CTkTextbox(right, height=140)
+        self.txt_machines = ctk.CTkTextbox(right, height=160)
         self.txt_machines.grid(row=4, column=0, columnspan=4, sticky="nsew", padx=12, pady=(6, 12))
-        right.grid_rowconfigure(4, weight=1)
 
-        # actions
+        # actions row 1
         ctk.CTkLabel(right, text="Gia hạn (ngày):").grid(row=5, column=0, sticky="e", padx=(12, 6), pady=(0, 8))
         self.ent_days = ctk.CTkEntry(right, width=100, placeholder_text="vd 30")
         self.ent_days.grid(row=5, column=1, sticky="w", padx=(0, 12), pady=(0, 8))
@@ -123,6 +143,7 @@ class AdminApp:
                                         width=140, command=self.on_delete, state="disabled")
         self.btn_delete.grid(row=5, column=3, sticky="e", padx=(0, 12), pady=(0, 8))
 
+        # actions row 2
         ctk.CTkLabel(right, text="Đặt lại mật khẩu:").grid(row=6, column=0, sticky="e", padx=(12, 6), pady=(0, 8))
         self.ent_new_pw = ctk.CTkEntry(right, width=180, placeholder_text="mật khẩu mới")
         self.ent_new_pw.grid(row=6, column=1, sticky="w", padx=(0, 12), pady=(0, 8))
@@ -131,15 +152,54 @@ class AdminApp:
                                           command=self.on_reset_password, state="disabled")
         self.btn_reset_pw.grid(row=6, column=2, sticky="w", padx=(0, 6), pady=(0, 8))
 
-        self.lbl_hint = ctk.CTkLabel(right, text="* Reset mật khẩu cần endpoint /admin/users/<u>/reset_password", text_color="#7a7a7a")
-        self.lbl_hint.grid(row=7, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 12))
+        # rename
+        ctk.CTkLabel(right, text="Đổi tên (username mới):").grid(row=7, column=0, sticky="e", padx=(12, 6), pady=(0, 12))
+        self.ent_new_name = ctk.CTkEntry(right, width=180, placeholder_text="tên mới")
+        self.ent_new_name.grid(row=7, column=1, sticky="w", padx=(0, 12), pady=(0, 12))
+        self.btn_rename = ctk.CTkButton(right, text="Đổi tên", width=120, command=self.on_rename, state="disabled")
+        self.btn_rename.grid(row=7, column=2, sticky="w", padx=(0, 6), pady=(0, 12))
 
-    # =============== actions ===============
+    def _build_tab_create(self):
+        body = self.tab_create
+        body.grid_columnconfigure(0, weight=1)
+        form = ctk.CTkFrame(body, corner_radius=10)
+        form.pack(padx=16, pady=16, fill="x")
+
+        ctk.CTkLabel(form, text="Tạo tài khoản mới", font=("Arial", 16, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(12, 8))
+
+        ctk.CTkLabel(form, text="Username").grid(row=1, column=0, sticky="e", padx=(12, 6), pady=6)
+        self.cr_username = ctk.CTkEntry(form, width=260, placeholder_text="username")
+        self.cr_username.grid(row=1, column=1, sticky="w", padx=(0, 12), pady=6)
+
+        ctk.CTkLabel(form, text="Password").grid(row=2, column=0, sticky="e", padx=(12, 6), pady=6)
+        self.cr_password = ctk.CTkEntry(form, width=260, placeholder_text="password")
+        self.cr_password.grid(row=2, column=1, sticky="w", padx=(0, 12), pady=6)
+
+        ctk.CTkLabel(form, text="Pending machine").grid(row=3, column=0, sticky="e", padx=(12, 6), pady=6)
+        self.cr_pending = ctk.CTkEntry(form, width=260, placeholder_text="tùy chọn")
+        self.cr_pending.grid(row=3, column=1, sticky="w", padx=(0, 12), pady=6)
+
+        ctk.CTkLabel(form, text="Paid days").grid(row=4, column=0, sticky="e", padx=(12, 6), pady=6)
+        self.cr_paid = ctk.CTkEntry(form, width=120, placeholder_text="vd 30")
+        self.cr_paid.grid(row=4, column=1, sticky="w", padx=(0, 12), pady=6)
+
+        self.btn_create = ctk.CTkButton(form, text="Tạo tài khoản", width=160, command=self.on_create_user, state="disabled")
+        self.btn_create.grid(row=5, column=1, sticky="w", padx=(0, 12), pady=(12, 16))
+
+        # hint
+        hint = ctk.CTkLabel(body, text="Gợi ý: nếu Paid days > 0 thì user tạo ra là paid, không tính quota trial máy.\n"
+                                       "Nếu Paid days = 0 thì có thể nhập Pending machine để giữ chỗ trial cho máy đó.",
+                            text_color="#666")
+        hint.pack(anchor="w", padx=20)
+
+    # ---------- auth & network ----------
+    def _headers(self):
+        return {"Authorization": f"Bearer {self.admin_token}"} if self.admin_token else {}
+
     def on_login(self):
         base = self.api_url.get().rstrip("/")
         user = self.admin_user.get().strip()
         pw = self.admin_pass.get()
-
         if not base or not user or not pw:
             messagebox.showerror("Lỗi", "Điền API URL, admin và mật khẩu.")
             return
@@ -149,13 +209,12 @@ class AdminApp:
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không kết nối được: {e}")
             return
-
         if not j.get("ok"):
             messagebox.showerror("Lỗi", j.get("message", "Đăng nhập thất bại"))
             return
-
         self.admin_token = j.get("token")
         self.btn_refresh.configure(state="normal")
+        self.btn_create.configure(state="normal")
         self.refresh_users()
 
     def refresh_users(self):
@@ -163,29 +222,31 @@ class AdminApp:
             return
         base = self.api_url.get().rstrip("/")
         try:
-            r = requests.get(f"{base}/admin/users", headers={"Authorization": f"Bearer {self.admin_token}"}, timeout=20)
+            r = requests.get(f"{base}/admin/users", headers=self._headers(), timeout=20)
             j = r.json()
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không tải danh sách: {e}")
             return
-
         if not j.get("ok"):
             messagebox.showerror("Lỗi", j.get("message", "Không tải được users"))
             return
+        self.users_cache = j.get("users", {})
+        self._apply_filter()
 
-        users = j.get("users", {})
-        self.users_cache = users
-
-        self.listbox.delete(0, tk.END)
-        for uname in sorted(users.keys(), key=str.lower):
-            self.listbox.insert(tk.END, uname)
-
-        # clear details
+        # clear detail
         self.selected_user.set("")
         self._show_user_details(None)
-        self.btn_extend.configure(state="disabled")
-        self.btn_delete.configure(state="disabled")
-        self.btn_reset_pw.configure(state="disabled")
+        self._set_detail_buttons(False)
+
+    def _apply_filter(self, *_):
+        key = (self.search_var.get() or "").strip().lower()
+        names = sorted(self.users_cache.keys(), key=str.lower)
+        if key:
+            names = [n for n in names if key in n.lower()]
+        self.filtered_users = names
+        self.listbox.delete(0, tk.END)
+        for n in self.filtered_users:
+            self.listbox.insert(tk.END, n)
 
     def on_select_user(self, _evt):
         try:
@@ -194,11 +255,16 @@ class AdminApp:
             sel = None
         self.selected_user.set(sel or "")
         self._show_user_details(sel)
-        have = bool(sel)
-        self.btn_extend.configure(state="normal" if have else "disabled")
-        self.btn_delete.configure(state="normal" if have else "disabled")
-        self.btn_reset_pw.configure(state="normal" if have else "disabled")
+        self._set_detail_buttons(bool(sel))
 
+    def _set_detail_buttons(self, enabled: bool):
+        state = "normal" if enabled else "disabled"
+        self.btn_extend.configure(state=state)
+        self.btn_delete.configure(state=state)
+        self.btn_reset_pw.configure(state=state)
+        self.btn_rename.configure(state=state)
+
+    # ---------- detail actions ----------
     def _show_user_details(self, uname):
         if not uname or uname not in self.users_cache:
             self.lbl_user.configure(text="User: -")
@@ -206,6 +272,7 @@ class AdminApp:
             self.lbl_pending.configure(text="Pending machine: -")
             self.txt_machines.configure(state="normal")
             self.txt_machines.delete("1.0", tk.END)
+            self.txt_machines.insert(tk.END, "Machines: (none)\n")
             self.txt_machines.configure(state="disabled")
             return
 
@@ -214,7 +281,6 @@ class AdminApp:
         pending = info.get("pending_machine")
         machines = info.get("machines") or []
 
-        # days left
         dl = days_left_from_iso(paid) if paid else None
         self.lbl_user.configure(text=f"User: {uname}")
         self.lbl_paid.configure(text=f"Paid until: {paid or '-'}  (days_left: {dl if dl is not None else '-'})")
@@ -234,33 +300,25 @@ class AdminApp:
         uname = self.selected_user.get()
         if not uname:
             return
-        days_str = self.ent_days.get().strip() or "0"
         try:
-            days = int(days_str)
+            days = int((self.ent_days.get() or "0").strip())
         except ValueError:
             messagebox.showerror("Lỗi", "Số ngày không hợp lệ.")
             return
         if days <= 0:
             messagebox.showerror("Lỗi", "Nhập số ngày > 0.")
             return
-
         base = self.api_url.get().rstrip("/")
         try:
-            r = requests.post(
-                f"{base}/admin/users/{uname}/set_paid",
-                json={"days": days},
-                headers={"Authorization": f"Bearer {self.admin_token}"},
-                timeout=20
-            )
+            r = requests.post(f"{base}/admin/users/{uname}/set_paid",
+                              json={"days": days}, headers=self._headers(), timeout=20)
             j = r.json()
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không kết nối: {e}")
             return
-
         if not j.get("ok"):
             messagebox.showerror("Lỗi", j.get("message", "Gia hạn thất bại"))
             return
-
         messagebox.showinfo("OK", j.get("message", "Đã gia hạn"))
         self.refresh_users()
 
@@ -270,23 +328,17 @@ class AdminApp:
             return
         if not messagebox.askyesno("Xác nhận", f"Xóa tài khoản '{uname}'?"):
             return
-
         base = self.api_url.get().rstrip("/")
         try:
-            r = requests.delete(
-                f"{base}/admin/users/{uname}",
-                headers={"Authorization": f"Bearer {self.admin_token}"},
-                timeout=20
-            )
+            r = requests.delete(f"{base}/admin/users/{uname}",
+                                headers=self._headers(), timeout=20)
             j = r.json()
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không kết nối: {e}")
             return
-
         if not j.get("ok"):
             messagebox.showerror("Lỗi", j.get("message", "Xóa thất bại"))
             return
-
         messagebox.showinfo("OK", j.get("message", "Đã xóa"))
         self.refresh_users()
 
@@ -294,33 +346,89 @@ class AdminApp:
         uname = self.selected_user.get()
         if not uname:
             return
-        new_pw = self.ent_new_pw.get().strip()
+        new_pw = (self.ent_new_pw.get() or "").strip()
         if not new_pw:
             messagebox.showerror("Lỗi", "Nhập mật khẩu mới.")
             return
-
         base = self.api_url.get().rstrip("/")
         try:
-            r = requests.post(
-                f"{base}/admin/users/{uname}/reset_password",
-                json={"new_password": new_pw},
-                headers={"Authorization": f"Bearer {self.admin_token}"},
-                timeout=20
-            )
+            r = requests.post(f"{base}/admin/users/{uname}/reset_password",
+                              json={"new_password": new_pw},
+                              headers=self._headers(), timeout=20)
             j = r.json()
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không kết nối: {e}")
             return
-
         if not j.get("ok"):
             messagebox.showerror("Lỗi", j.get("message", "Reset mật khẩu thất bại"))
             return
-
         messagebox.showinfo("OK", j.get("message", "Đã cập nhật mật khẩu"))
+
+    def on_rename(self):
+        uname = self.selected_user.get()
+        if not uname:
+            return
+        new_name = (self.ent_new_name.get() or "").strip().lower()
+        if not new_name:
+            messagebox.showerror("Lỗi", "Nhập username mới.")
+            return
+        base = self.api_url.get().rstrip("/")
+        try:
+            r = requests.post(f"{base}/admin/users/{uname}/rename",
+                              json={"new_username": new_name},
+                              headers=self._headers(), timeout=20)
+            j = r.json()
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không kết nối: {e}")
+            return
+        if not j.get("ok"):
+            messagebox.showerror("Lỗi", j.get("message", "Đổi tên thất bại"))
+            return
+        messagebox.showinfo("OK", j.get("message", "Đã đổi tên"))
+        self.refresh_users()
+        self.ent_new_name.delete(0, tk.END)
+
+    # ---------- create tab actions ----------
+    def on_create_user(self):
+        base = self.api_url.get().rstrip("/")
+        username = (self.cr_username.get() or "").strip().lower()
+        password = (self.cr_password.get() or "").strip()
+        pending = (self.cr_pending.get() or "").strip().upper()
+        paid_days = (self.cr_paid.get() or "").strip()
+        try:
+            paid_days = int(paid_days) if paid_days else 0
+        except ValueError:
+            messagebox.showerror("Lỗi", "Paid days không hợp lệ.")
+            return
+        if not username or not password:
+            messagebox.showerror("Lỗi", "Nhập username và password.")
+            return
+        try:
+            r = requests.post(f"{base}/admin/users/create",
+                              json={
+                                  "username": username,
+                                  "password": password,
+                                  "pending_machine": pending,
+                                  "paid_days": paid_days
+                              },
+                              headers=self._headers(), timeout=20)
+            j = r.json()
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không kết nối: {e}")
+            return
+        if not j.get("ok"):
+            messagebox.showerror("Lỗi", j.get("message", "Tạo tài khoản thất bại"))
+            return
+        messagebox.showinfo("OK", j.get("message", "Đã tạo"))
+        # clear form + refresh
+        self.cr_username.delete(0, tk.END)
+        self.cr_password.delete(0, tk.END)
+        self.cr_pending.delete(0, tk.END)
+        self.cr_paid.delete(0, tk.END)
+        self.refresh_users()
 
     def run(self):
         self.root.mainloop()
-
 
 if __name__ == "__main__":
     AdminApp().run()
