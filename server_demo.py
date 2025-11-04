@@ -311,6 +311,10 @@ def admin_delete_user(username):
     users_col.delete_one({"username": username})
     return jsonify({"ok": True, "message": f"Đã xóa user {username}"})
 
+@app.get("/ping")
+def ping():
+    return {"ok": True, "message": "NLPA server is alive"}
+
 # ===== CHẠY SERVER =====
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
