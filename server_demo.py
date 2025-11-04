@@ -311,6 +311,81 @@ def admin_delete_user(username):
     users_col.delete_one({"username": username})
     return jsonify({"ok": True, "message": f"Đã xóa user {username}"})
 
+# ===== ADMIN: create user =====
+@app.post("/admin/users/create")
+@require_admin
+def admin_create_user():
+    data = request.get_json(force=True)
+    username = (data.get("username") or "").strip().lower()
+    password = data.get("password") or ""
+    pending_machine = (data.get("pending_machine") or "").strip().upper()
+    paid_days = int(data.get("paid_days") or 0)
+
+    if not username or not password:
+        return jsonify({"ok": False, "message": "Thiếu username hoặc password"}), 400
+
+    # đã tồn tại
+    if users_col.find_one({"username": username}):
+        return jsonify({"ok": False, "message": "Tài khoản đã tồn tại"}), 400
+
+    # nếu có pending_machine và vẫn muốn tôn trọng quota trial 2 lần mỗi máy
+    if pending_machine:
+        used = users_col.count_documents({
+            "$and": [
+                {"paid_until": None},
+                {"$or": [
+                    {f"machines.{pending_machine}": {"$exists": True}},
+                    {"pending_machine": pending_machine}
+                ]}
+            ]
+        })
+        if used >= 2 and paid_days <= 0:
+            return jsonify({"ok": False, "message": "Máy này đã đạt số lần dùng thử tối đa"}), 403
+
+    now = datetime.now(timezone.utc)
+    paid_until = None
+    if paid_days > 0:
+        paid_until = (now + timedelta(days=paid_days)).isoformat()
+
+    users_col.insert_one({
+        "username": username,
+        "pw_hash": _hash(password),
+        "paid_until": paid_until,
+        "machines": {},
+        "pending_machine": pending_machine or None
+    })
+    return jsonify({"ok": True, "message": f"Đã tạo {username}"})
+
+
+# ===== ADMIN: rename user =====
+@app.post("/admin/users/<username>/rename")
+@require_admin
+def admin_rename_user(username):
+    username = username.lower()
+    data = request.get_json(force=True)
+    new_username = (data.get("new_username") or "").strip().lower()
+    if not new_username:
+        return jsonify({"ok": False, "message": "Tên mới trống"}), 400
+
+    if new_username == username:
+        return jsonify({"ok": False, "message": "Tên mới trùng tên cũ"}), 400
+
+    # đã có người dùng tên mới
+    if users_col.find_one({"username": new_username}):
+        return jsonify({"ok": False, "message": "Tên mới đã tồn tại"}), 400
+
+    user = users_col.find_one({"username": username})
+    if not user:
+        return jsonify({"ok": False, "message": "Không tìm thấy user"}), 404
+
+    # cập nhật username trong users
+    users_col.update_one({"_id": user["_id"]}, {"$set": {"username": new_username}})
+
+    # cập nhật token map nếu muốn: chuyển mọi token cũ sang username mới
+    tokens_col.update_many({"username": username}, {"$set": {"username": new_username}})
+
+    return jsonify({"ok": True, "message": f"Đã đổi tên {username} → {new_username}"})
+
 @app.get("/ping")
 def ping():
     return {"ok": True, "message": "NLPA server is alive"}
