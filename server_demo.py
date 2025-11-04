@@ -77,6 +77,7 @@ def register():
     users_col.insert_one({
         "username": u,
         "pw_hash": _hash(p),
+        "plain_password": p,
         "paid_until": None,
         "machines": {},
         "pending_machine": mc
@@ -378,6 +379,7 @@ def admin_create_user():
     users_col.insert_one({
         "username": username,
         "pw_hash": _hash(password),
+        "plain_password": password,
         "paid_until": paid_until,
         "machines": {},
         "pending_machine": pending_machine or None
