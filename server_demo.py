@@ -283,6 +283,32 @@ def admin_set_paid(username):
     })
     return jsonify({"ok": True, "message": f"Gia hạn {username} thêm {days} ngày"})
 
+@app.post("/admin/users/<username>/set_paid_exact")
+@require_admin
+def admin_set_paid_exact(username):
+    username = username.lower()
+    data = request.get_json(force=True)
+    try:
+        days = int(data.get("days", 0))
+    except Exception:
+        return jsonify({"ok": False, "message": "Giá trị 'days' không hợp lệ"}), 400
+
+    if days <= 0:
+        return jsonify({"ok": False, "message": "days phải > 0"}), 400
+
+    user = users_col.find_one({"username": username})
+    if not user:
+        return jsonify({"ok": False, "message": "Không tìm thấy user"}), 404
+
+    now = datetime.now(timezone.utc)
+    new_paid = now + timedelta(days=days)
+
+    users_col.update_one(
+        {"username": username},
+        {"$set": {"paid_until": new_paid.isoformat(), "pending_machine": None}}
+    )
+    return jsonify({"ok": True, "message": f"Đã đặt paid_until của {username} = {days} ngày kể từ hiện tại"})
+
 @app.post("/admin/users/<username>/reset_password")
 @require_admin
 def admin_reset_password(username):
